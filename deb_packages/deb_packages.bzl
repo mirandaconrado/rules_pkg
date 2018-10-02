@@ -14,12 +14,36 @@ def _deb_packages_impl(repository_ctx):
         urllist.append(mirror + repository_ctx.attr.packages[package])
       else:
         urllist.append(mirror + "/" + repository_ctx.attr.packages[package])
+    output = "debs/" + repository_ctx.attr.packages_sha256[package] + ".deb"
     repository_ctx.download(
         urllist,
-        output="debs/" + repository_ctx.attr.packages_sha256[package] + ".deb",
+        output=output,
         sha256=repository_ctx.attr.packages_sha256[package],
         executable=False)
     package_rule_dict[package] = "@" + repository_ctx.name + "//debs:" + repository_ctx.attr.packages_sha256[package] + ".deb"
+
+    if repository_ctx.attr.build_file:
+      dpkg = repository_ctx.which('dpkg')
+      if dpkg == None:
+        fail("couldn't find dpkg")
+      repository_ctx.execute([dpkg, "-x", output, "extracted/"])
+
+  if repository_ctx.attr.build_file:
+    repository_ctx.symlink(repository_ctx.attr.build_file, "BUILD")
+
+  if repository_ctx.attr.rpath_fixes and not repository_ctx.attr.build_file:
+      fail("cannot fix rpath without extraining debs")
+
+  if repository_ctx.attr.rpath_fixes:
+    patchelf = repository_ctx.which('patchelf')
+    if patchelf == None:
+        fail("patchelf needs to be installed to fix rpaths")
+
+    for f in repository_ctx.attr.rpath_fixes:
+        for fix in repository_ctx.attr.rpath_fixes[f]:
+            result = repository_ctx.execute([patchelf, '--set-rpath', "%s" % fix, "extracted/" + f])
+            if result.return_code:
+                fail("patch failed: %s (%s)"  % (result.stdout, result.stderr))
 
   # create the deb_packages.bzl file that contains the package name : filename mapping
   repository_ctx.file("debs/deb_packages.bzl", repository_ctx.name + " = " + struct(**package_rule_dict).to_json(), executable=False)
@@ -58,6 +82,8 @@ _deb_packages = repository_rule(
         "pgp_key": attr.string(
             doc = "the name of the http_file rule that contains the pgp key that signed the Release file at <mirrorURL>/dists/<distro>/Release, required",
         ),
+        "build_file": attr.label(allow_single_file=True),
+        "rpath_fixes": attr.string_list_dict(),
     },
 )
 
